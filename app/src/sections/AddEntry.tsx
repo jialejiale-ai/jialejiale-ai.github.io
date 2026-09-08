@@ -202,3 +202,235 @@ function LibraryPicker({ onAdd }: { onAdd: (items: NewEntryInput[]) => void }) {
     </div>
   )
 }
+
+/* ── 拍照 AI 识别 ─────────────────────────────────── */
+
+function PhotoRecognize({
+  apiKey,
+  onAdd,
+  onGoSettings,
+}: {
+  apiKey: string
+  onAdd: (items: NewEntryInput[]) => void
+  onGoSettings: () => void
+}) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [photo, setPhoto] = useState<string | null>(null) // 识别用大图
+  const [thumb, setThumb] = useState<string | null>(null) // 记录用缩略图
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [dishes, setDishes] = useState<RecognizedDish[] | null>(null)
+  const [meal, setMeal] = useState<MealType>('午餐')
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return
+    setError('')
+    setDishes(null)
+    try {
+      const [big, small] = await Promise.all([
+        fileToDataUrl(file, 1024, 0.8),
+        fileToDataUrl(file, 320, 0.6),
+      ])
+      setPhoto(big)
+      setThumb(small)
+    } catch {
+      setError('图片读取失败，请换一张试试。')
+    }
+  }
+
+  async function runRecognize() {
+    if (!photo || !apiKey) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = await recognizeFood(apiKey, photo)
+      setDishes(result)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '识别失败，请重试。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function updateDish(i: number, patch: Partial<RecognizedDish>) {
+    setDishes((prev) => prev && prev.map((d, idx) => (idx === i ? { ...d, ...patch } : d)))
+  }
+
+  if (!apiKey) {
+    return (
+      <Card>
+        <CardContent className="pt-6 text-center space-y-3">
+          <Camera className="h-8 w-8 mx-auto text-neutral-300" />
+          <p className="text-sm text-neutral-600">
+            拍照识别使用 Kimi（Moonshot）视觉模型，需要先在「设置」中填入你自己的 API Key。
+          </p>
+          <p className="text-xs text-neutral-400">
+            API Key 只保存在本机浏览器中，不会上传到其它服务器。识别结果为估算值，仅供参考。
+          </p>
+          <Button variant="outline" onClick={onGoSettings}>
+            去设置 API Key
+          </Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="pt-4 space-y-3">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => handleFile(e.target.files?.[0])}
+          />
+          {photo ? (
+            <img src={photo} alt="待识别" className="w-full max-h-64 object-contain rounded-lg border" />
+          ) : (
+            <button
+              onClick={() => fileRef.current?.click()}
+              className="w-full h-40 rounded-lg border-2 border-dashed border-neutral-200 flex flex-col items-center justify-center gap-2 text-neutral-400 hover:border-neutral-400 transition-colors"
+            >
+              <Camera className="h-6 w-6" />
+              <span className="text-sm">拍摄或选择餐食照片</span>
+            </button>
+          )}
+          <div className="flex gap-2">
+            {photo && (
+              <Button variant="outline" className="flex-1" onClick={() => fileRef.current?.click()}>
+                换一张
+              </Button>
+            )}
+            <Button className="flex-1" disabled={!photo || busy} onClick={runRecognize}>
+              {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {busy ? '识别中…' : '开始识别'}
+            </Button>
+          </div>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <p className="text-xs text-neutral-400">
+            提示：照片会发送给 Moonshot API 进行识别；结果为估算值，可在下方手动修正后再保存。
+          </p>
+        </CardContent>
+      </Card>
+
+      {dishes && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>识别结果（可修正）</span>
+              <MealSelect value={meal} onChange={setMeal} />
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {dishes.map((d, i) => (
+              <div key={i} className="p-3 rounded-lg border border-neutral-200 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Input value={d.name} onChange={(e) => updateDish(i, { name: e.target.value })} className="h-8" />
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['carbs', 'protein', 'fat'] as const).map((k) => (
+                    <div key={k}>
+                      <Label className="text-xs text-neutral-500">
+                        {k === 'carbs' ? '碳水(克)' : k === 'protein' ? '蛋白质(克)' : '脂肪(克)'}
+                      </Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        className="h-8"
+                        value={d[k]}
+                        onChange={(e) => updateDish(i, { [k]: Math.max(0, Number(e.target.value) || 0) })}
+                      />
+                    </div>
+                  ))}
+                </div>
+                {d.note && <p className="text-xs text-neutral-400">{d.note}</p>}
+              </div>
+            ))}
+            <Button
+              className="w-full"
+              onClick={() => {
+                onAdd(
+                  dishes.map((d) => ({
+                    name: d.name,
+                    meal,
+                    carbs: d.carbs,
+                    protein: d.protein,
+                    fat: d.fat,
+                    photo: thumb ?? undefined,
+                  })),
+                )
+                setDishes(null)
+                setPhoto(null)
+                setThumb(null)
+              }}
+            >
+              全部添加到{meal}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+/* ── 手动输入 ─────────────────────────────────── */
+
+function ManualForm({ onAdd }: { onAdd: (items: NewEntryInput[]) => void }) {
+  const [name, setName] = useState('')
+  const [carbs, setCarbs] = useState('')
+  const [protein, setProtein] = useState('')
+  const [fat, setFat] = useState('')
+  const [meal, setMeal] = useState<MealType>('午餐')
+
+  const valid =
+    name.trim() !== '' && (Number(carbs) > 0 || Number(protein) > 0 || Number(fat) > 0)
+
+  return (
+    <Card>
+      <CardContent className="pt-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <Label className="text-sm">名称</Label>
+          <MealSelect value={meal} onChange={setMeal} />
+        </div>
+        <Input placeholder="如：食堂自选套餐" value={name} onChange={(e) => setName(e.target.value)} />
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <Label className="text-xs text-neutral-500">碳水(克)</Label>
+            <Input type="number" min={0} value={carbs} onChange={(e) => setCarbs(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs text-neutral-500">蛋白质(克)</Label>
+            <Input type="number" min={0} value={protein} onChange={(e) => setProtein(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs text-neutral-500">脂肪(克)</Label>
+            <Input type="number" min={0} value={fat} onChange={(e) => setFat(e.target.value)} />
+          </div>
+        </div>
+        <Button
+          className="w-full"
+          disabled={!valid}
+          onClick={() => {
+            onAdd([
+              {
+                name: name.trim(),
+                meal,
+                carbs: Number(carbs) || 0,
+                protein: Number(protein) || 0,
+                fat: Number(fat) || 0,
+              },
+            ])
+            setName('')
+            setCarbs('')
+            setProtein('')
+            setFat('')
+          }}
+        >
+          添加到{meal}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
